@@ -1,0 +1,3 @@
+mariadb==1.1.6
+kafka-python==2.0.2
+msgpack==1.0.4
