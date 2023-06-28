@@ -6,27 +6,25 @@ from confluent_kafka import Consumer
 
 # connection parameter
 record_params= {
-    "user" : os.environ["MARIADB_USER"],
-    "password" : os.environ["MARIADB_PASSWORD"],
-    "host" : os.environ["MARIADB_HOST"],
-    "database" : os.environ["MARIADB_DATABASE"],
+    "user" : os.environ["RECORD_USER"],
+    "password" : os.environ["RECORD_PASSWORD"],
+    "host" : os.environ["RECORD_HOST"],
+    "database" : os.environ["RECORD_DATABASE"],
+    "port" : os.environ["RECORD_PORT"],
 }
 
 base_params= {
     "user" : os.environ["MARIADB_USER"],
     "password" : os.environ["MARIADB_PASSWORD"],
-    "host" : os.environ["BASE_MARIADB_HOST"],
+    "host" : os.environ["MARIADB_HOST"],
 }
 
 target_params= {
     "user" : os.environ["MARIADB_USER"],
     "password" : os.environ["MARIADB_PASSWORD"],
     "host" : os.environ["TARGET_MARIADB_HOST"],
+    "port" : os.environ["TARGET_MARIADB_PORT"],
 }
-
-# Establish a connection
-base = mariadb.connect(**base_params)
-target = mariadb.connect(**target_params)
 
 # Record Tables
 
@@ -36,32 +34,30 @@ record_init = [
         "create table if not exists globalvars (test_id int unsigned not null, server enum('base', 'target') not null, varname varchar(64) charset latin1 not null, startvalue varchar(2048), stopvalue varchar(2048), primary key(test_id, server, varname))",
 # information_schema.GLOBAL_STATUS
         "create table if not exists globalstatus (test_id int unsigned not null, server enum('base', 'target') not null, varname varchar(64) charset latin1 not null, startvalue varchar(2048), stopvalue varchar(2048), primary key(test_id, server, varname))",
+        "create table if not exists queries (id int unsigned not null auto_increment, test_id int unsigned not null, db varchar(64), info varchar(2048), digest varchar(32) charset latin1, qtime double, explain text, server enum('base', target'), other int unsigned, primarykey(id), key_test index(test_id, db, info, digest))",
         ]
 
 # Init recording tables if not there
 def init():
-    with mariadb.connect(**record_params) as recording:
-        with r as recording.cursor() as r:
-            for i in record_init:
-                r.execute(i)
-
+    with mariadb.connect(**record_params) as recording, recording.cursor() as r:
+        for i in record_init:
+            r.execute(i)
 
 def process_events(recording, base, target):
-    with recording.cursor() as r, base.cursor() as b, target.cursor() as t :
+    with recording.cursor() as r, base.cursor() as b, target.cursor() as t:
         consumer.subscribe(['scary_test', 'scary_queries'])
         msg = consumer.poll(timeout=1.0)
         if msg is None:
-            continue
+            return
         if msg.error():
             if msg.error().code() == KafkaError._PARTITION_EOF:
                 # End of partition event
-                sys.stderr.write('%% %s [%d] reached end at offset %d\n' %
-                             (msg.topic(), msg.partition(), msg.offset()))
-             elif msg.error():
+                sys.stderr.write('%% %s [%d] reached end at offset %d\n' % (msg.topic(), msg.partition(), msg.offset()))
+            elif msg.error():
                 raise KafkaException(msg.error())
         else:
+            v = msgpack.unpackb(msg.value())
             if msg.topic() == 'scary_test':
-                v = msgpack.unpackb((msg.value())
                 r.begin()
                 if msg.key() == 'start':
                     r.execute('insert into test (testname, start) values (?, ?)', [v.testname, v.time])
@@ -74,8 +70,18 @@ def process_events(recording, base, target):
                 r.commit()
 
             elif msg.topic() == 'scary_queries':
-                r.execute("INSERT INTO my_table VALUES (?, ?)", (msg.topic(), msg.value()))
-                conn.commit()
+                b.execute('use ' + v.db)
+                b.execute('analyze format=json ' + v.info)
+                baseQP = b.fetchone()[0]
+                r.execute('set @test_id = (select id from test where testname = ?)', v.testname)
+                r.begin()
+                r.execute("INSERT INTO queries (test_id, db, info, server, qtime, explain) VALUES (@test_id, ?, ?)", (v.db, v.info, 'base', json.loads(baseQP)['query_block']['r_total_time_ms'], baseQP))
+                id = r.lastrowid;
+                t.execute('use ' + v.db)
+                t.execute('analyze format=json ' + v.info)
+                targetQP = t.fetchone()[0]
+                r.execute("INSERT INTO queries (test_id, db, info, server, qtime, explain, other) VALUES (@test_id, ?, ?)", (v.db, v.info, 'target', json.loads(targetQP)['query_block']['r_total_time_ms'], targetQP, id))
+                r.commit()
 
 def work():
     consumer = Consumer({'bootstrap.servers': os.environ['KAFKA'], 'group.id' : 'scary'})
