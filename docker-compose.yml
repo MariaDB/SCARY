@@ -1,20 +1,52 @@
 version: '2'
 services:
+  agent:
+    build: ./agent
+    image: scary:agent
+    environment: &base_env
+      MARIADB_HOST: mariadb_base
+      MARIADB_USER: test
+      MARIADB_PASSWORD: test
+      MARIADB_DATABASE: test
+      KAFKA: kafka
+    depends_on:
+      mariadb_base:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+  processor:
+    build: ./processor
+    image: scary:processor
+    environment:
+      <<: *base_env
+      TARGET_MARIADB_HOST: mariadb_target
+      TARGET_MARIADB_PORT: 3307
+      RECORD_USER: recording
+      RECORD_PASSWORD: record
+      RECORD_HOST: mariadb_recording
+      RECORD_DATABASE: scary
+      RECORD_PORT : 3308
+    depends_on:
+      mariadb_base:
+        condition: service_healthy
+      mariadb_target:
+        condition: service_healthy
+      mariadb_recording:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
   mariadb_base:
     image: docker.io/library/mariadb:10.6
     volumes:
       - 'mariadb_base:/var/lib/mysql'
     environment:
-      - MARIADB_ALLOW_EMPTY_ROOT_PASSWORD=1
-      - MARIADB_USER=test
-      - MARIADB_PASSWORD=test
-      - MARIADB_DATABASE=test
-      - MARIADB_REPLICATION_USER=repl
-      - MARIADB_REPLICATION_PASSWORD=replica
-      - MARIADB_MYSQL_LOCALHOST_USER=1
+      <<: *base_env
+      MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: 1
+      MARIADB_REPLICATION_USER: repl
+      MARIADB_REPLICATION_PASSWORD: replica
     command: --log-bin=mariadb --server-id=100 --sync-binlog=1
     healthcheck:
-      test: ["CMD", "healthcheck.sh", "--su-mysql", "--connect", "--innodb_initialized"]
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -30,11 +62,10 @@ services:
       - MARIADB_MASTER_HOST=mariadb_base
       - MARIADB_REPLICATION_USER=repl
       - MARIADB_REPLICATION_PASSWORD=replica
-      - MARIADB_MYSQL_LOCALHOST_USER=1
-      - MARIADB_MYSQL_LOCALHOST_GRANTS=REPLICA MONITOR
+      - MARIADB_HEALTHCHECK_GRANTS=REPLICA MONITOR
     command: --server-id=200 --port 3307
     healthcheck:
-      test: ["CMD", "healthcheck.sh", "--su-mysql", "--innodb_initialized", "--replication_io", "--replication_sql", "--replication_seconds_behind_master=5", "--replication"]
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized", "--replication_io", "--replication_sql", "--replication_seconds_behind_master=5", "--replication"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -49,14 +80,14 @@ services:
       - MARIADB_DATABASE=scary
     command: --port 3308
     healthcheck:
-      test: ["CMD", "healthcheck.sh", "--su-mysql", "--innodb_initialized"]
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
       timeout: 5s
       retries: 3
-#  kafka:
-#    image: 'bitnami/kafka:latest'
-#    environment:
-#      - ALLOW_PLAINTEXT_LISTENER=yes
+  kafka:
+    image: 'bitnami/kafka:latest'
+    environment:
+      - ALLOW_PLAINTEXT_LISTENER=yes
   workload:
     image: docker.io/tpcorg/hammerdb:maria
     volumes:
@@ -64,11 +95,8 @@ services:
         source: ./workload_scripts
         target: /mnt
     environment:
-      - LOGS=/tmp
-      - MARIADB_HOST=mariadb_base
-      - MARIADB_USER=test
-      - MARIADB_PASSWORD=test
-      - MARIADB_DATABASE=test
+      <<: *base_env
+      LOGS: /tmp
     depends_on:
       mariadb_base:
         condition: service_healthy
