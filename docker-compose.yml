@@ -88,6 +88,9 @@ services:
     image: 'bitnami/kafka:latest'
     environment:
       - ALLOW_PLAINTEXT_LISTENER=yes
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+    volumes:
+      - 'kafka_storage:/bitnami/kafka'
   workload:
     image: docker.io/tpcorg/hammerdb:maria
     volumes:
@@ -109,4 +112,6 @@ volumes:
   mariadb_target:
     driver: local
   mariadb_recording:
+    driver: local
+  kafka_storage:
     driver: local
