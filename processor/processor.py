@@ -2,7 +2,7 @@ import mariadb
 import os
 import msgpack
 
-from confluent_kafka import Consumer
+from confluent_kafka import Consumer, KafkaError, KafkaException
 
 # connection parameter
 record_params= {
@@ -10,7 +10,7 @@ record_params= {
     "password" : os.environ["RECORD_PASSWORD"],
     "host" : os.environ["RECORD_HOST"],
     "database" : os.environ["RECORD_DATABASE"],
-    "port" : os.environ["RECORD_PORT"],
+    "port" : int(os.environ["RECORD_PORT"]),
 }
 
 base_params= {
@@ -23,7 +23,12 @@ target_params= {
     "user" : os.environ["MARIADB_USER"],
     "password" : os.environ["MARIADB_PASSWORD"],
     "host" : os.environ["TARGET_MARIADB_HOST"],
-    "port" : os.environ["TARGET_MARIADB_PORT"],
+    "port" : int(os.environ["TARGET_MARIADB_PORT"]),
+}
+
+kafka_params = {
+    'bootstrap.servers': os.environ['KAFKA'],
+    'group.id' : 'scary'
 }
 
 # Record Tables
@@ -37,13 +42,19 @@ record_init = [
         "create table if not exists queries (id int unsigned not null auto_increment, test_id int unsigned not null, db varchar(64), info varchar(2048), digest varchar(32) charset latin1, qtime double, explain text, server enum('base', target'), other int unsigned, primarykey(id), key_test index(test_id, db, info, digest))",
         ]
 
+
+def decode_datetime(obj):
+    if '__datetime__' in obj:
+        obj = datetime.datetime.strptime(obj["as_str"], "%Y%m%dT%H:%M:%S.%f")
+    return obj
+
 # Init recording tables if not there
 def init():
     with mariadb.connect(**record_params) as recording, recording.cursor() as r:
         for i in record_init:
             r.execute(i)
 
-def process_events(recording, base, target):
+def process_events(consumer, recording, base, target):
     with recording.cursor() as r, base.cursor() as b, target.cursor() as t:
         consumer.subscribe(['scary_test', 'scary_queries'])
         msg = consumer.poll(timeout=1.0)
@@ -56,7 +67,7 @@ def process_events(recording, base, target):
             elif msg.error():
                 raise KafkaException(msg.error())
         else:
-            v = msgpack.unpackb(msg.value())
+            v = msgpack.unpackb(msg.value(), object_hook=decode_datetime)
             if msg.topic() == 'scary_test':
                 r.begin()
                 if msg.key() == 'start':
@@ -84,10 +95,10 @@ def process_events(recording, base, target):
                 r.commit()
 
 def work():
-    consumer = Consumer({'bootstrap.servers': os.environ['KAFKA'], 'group.id' : 'scary'})
+    consumer = Consumer(**kafka_params)
     try:
         with mariadb.connect(**record_params) as recording, mariadb.connect(**target_params) as target, mariadb.connect(**base_params) as base:
-            process_events(recording, base, target)
+            process_events(consumer, recording, base, target)
 
     finally:
         consumer.close()
