@@ -1,9 +1,24 @@
 import mariadb
 import os, time
 import msgpack
-from datetime import datetime
+import datetime
+import signal
 
 from confluent_kafka import Producer
+
+# connection parameters
+conn_params= {
+    "user" : os.environ["MARIADB_USER"],
+    "password" : os.environ["MARIADB_USER"],
+    "host" : os.environ["MARIADB_HOST"],
+    "database" : os.environ["MARIADB_DATABASE"],
+}
+
+kafka_params = {
+    'bootstrap.servers': os.environ['KAFKA'],
+    'batch.size' : 256,
+    'linger.ms' : 4,
+}
 
 # https://stackoverflow.com/questions/18499497/how-to-process-sigterm-signal-gracefully#31464349
 class GracefulKiller:
@@ -15,33 +30,32 @@ class GracefulKiller:
   def exit_gracefully(self, *args):
     self.kill_now = True
 
+def encode_datetime(obj):
+    if isinstance(obj, datetime.datetime):
+        return {'__datetime__': True, 'as_str': obj.strftime("%Y%m%dT%H:%M:%S.%f")}
+    return obj
+
 def send_variables(start_end):
-    test['time'] = datetime.now()
+    test['time'] = datetime.datetime.now()
     cursor.execute('SHOW GLOBAL VARIABLES')
     test['vars'] = cursor.fetchall()
     cursor.execute('SHOW GLOBAL STATUS')
     test['status'] = cursor.fetchall()
-    producer.produce('scary_test', msgpack.packb(test), start_end)
+    producer.produce('scary_test', msgpack.packb(test, default=encode_datetime), start_end)
 
 if __name__ == '__main__':
-    # connection parameters
-    conn_params= {
-        "user" : os.environ["MARIADB_USER"],
-        "password" : os.environ["MARIADB_USER"],
-        "host" : os.environ["MARIADB_HOST"],
-        "database" : os.environ["MARIADB_DATABASE"],
-    }
+
     # Establish a connection
     connection = mariadb.connect(**conn_params)
 
     cursor = connection.cursor()
 
-    producer = Producer({'bootstrap.servers': os.environ['KAFKA']})
+    producer = Producer(**kafka_params)
 
     test = dict()
 
     test['name'] = os.environ.get('TEST')
-    if test.test is None:
+    if test['name'] is None:
         cursor.execute('SELECT CONCAT(@@hostname, DATE_FORMAT(now(), "_%Y%m%d_%H:%i:%s"))')
         (test['name'],) = cursor.fetchone()
         cursor.nextset()
@@ -72,6 +86,7 @@ if __name__ == '__main__':
                 q['db'] = db
                 q['info'] = info
                 producer.produce(query_stream, msgpack.packb(q), test_name)
+                producer.flush()
                 sent = sent + 1
             nextlist.append(query_id)
         sendlist = nextlist
