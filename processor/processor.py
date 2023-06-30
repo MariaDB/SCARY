@@ -87,17 +87,20 @@ def init():
         for i in record_init:
             r.execute(i)
 
-def scary_test_event(r, v):
-    r.begin()
-    if v['startstop'] == 'start':
-        r.execute('insert into test (testname, start) values (?, ?)', (v['testname'], v['time']))
-        r.execute('set @test_id = LAST_INSERT_ID()')
-    elif v['startstop'] == 'stop':
-        r.execute('update test set stop = ? where testname = ?', (v['time'], v['testname']))
-        r.execute('set @test_id = (select id from test where testname = ?)', (v['testname'],))
-    r.executemany('insert into globalvars values (@test_id, ?, ?)', v['vars'])
-    r.executemany('insert into globalstats values (@test_id, ?, ?)', v['status'])
-    r.commit()
+def scary_test_event(rc, v):
+    with rc.cursor(binary=True) as r:
+        rc.begin()
+        if v['startstop'] == 'start':
+            r.execute('insert into test (testname, start) values (?, ?)', (v['testname'], v['time']))
+            r.execute('set @test_id = LAST_INSERT_ID()')
+            r.executemany('insert into globalvars (test_id, server, varname, startvalue) values (@test_id, "base", ?, ?)', v['vars'])
+            r.executemany('insert into globalstatus (test_id, server, varname, startvalue) values (@test_id, "base", ?, ?)', v['status'])
+        elif v['startstop'] == 'stop':
+            r.execute('update test set stop = ? where testname = ?', (v['time'], v['testname']))
+            #r.execute('set @test_id = (select id from test where testname = ?)', (v['testname'],))
+            # TODO stop vars/status
+        # TODO Base vars/status
+        rc.commit()
 
 def process_events(consumer, recording, base, target):
     with recording.cursor(binary=True) as r, recording.cursor(prepared=True, binary=True) as rbq, recording.cursor(prepared=True,binary=True) as rtq, base.cursor() as b, target.cursor() as t:
@@ -116,7 +119,7 @@ def process_events(consumer, recording, base, target):
             else:
                 v = msgpack.unpackb(msg.value(), object_hook=decode_datetime)
                 if msg.topic() == 'scary_test':
-                    scary_test_event(r, v)
+                    scary_test_event(recording, v)
 
                 elif msg.topic() == 'scary_queries':
                     b.execute('use ' + v['db'])
@@ -145,16 +148,24 @@ def waitforstart():
         msg = consumer.poll()
         if msg.error():
             if msg.error().code() == KafkaError.UNKNOWN_TOPIC_OR_PART:
+                create_topic('scary_test')
                 from confluent_kafka.admin import AdminClient, NewTopic
-                admin = Consumer(**kafka_params)
-                admin.create_topics([NewTopic('scary_test', 1), NewTopic('scary_queries', WORKERS)])
+                admin = AdminClient(**kafka_params)
+                fs = admin.create_topics([NewTopic('scary_test', 1), NewTopic('scary_queries', WORKERS)])
+                # Wait for each operation to finish. https://github.com/confluentinc/confluent-kafka-python#basic-adminclient-example
+                for topic, f in fs.items():
+                    try:
+                        f.result()  # The result itself is None
+                        print("Topic {} created".format(topic))
+                    except Exception as e:
+                        print("Failed to create topic {}: {}".format(topic, e))
                 continue
             else:
                 raise KafkaException(msg.error())
 
         v = msgpack.unpackb(msg.value(), object_hook=decode_datetime)
         if msg.topic() == 'scary_test' and v['startstop'] == 'start':
-            with mariadb.connect(**record_params) as recording, recording.cursor(binary=True) as r:
+            with mariadb.connect(**record_params) as r:
                 scary_test_event(r, v)
             break
         else:
