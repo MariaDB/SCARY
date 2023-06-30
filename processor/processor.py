@@ -56,7 +56,8 @@ record_init = [
             test_id int unsigned not null,
             server enum('base', 'target') not null,
             varname varchar(64) charset latin1 not null,
-            startvalue varchar(2048), stopvalue varchar(2048),
+            startvalue varchar(2048),
+            stopvalue varchar(2048),
             primary key(test_id, server, varname))""",
 # The queries
         """create table if not exists queries (
