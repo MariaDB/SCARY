@@ -36,7 +36,9 @@ def encode_datetime(obj):
         return {'__datetime__': True, 'as_str': obj.strftime("%Y%m%dT%H:%M:%S.%f")}
     return obj
 
-def send_variables(start_end):
+def send_variables(start_end, test_name):
+    test = dict()
+    test['testname'] = test_name
     test['startstop'] = start_end
     test['time'] = datetime.datetime.now()
     cursor.execute('SHOW GLOBAL VARIABLES')
@@ -67,7 +69,7 @@ if __name__ == '__main__':
 
     test_name = test['name']
 
-    send_variables('start')
+    send_variables('start', test_name)
 
     query_stream = 'scary_queries'
 
@@ -116,6 +118,6 @@ if __name__ == '__main__':
     # Shutdown
     print("shutting down")
     producer.flush()
-    send_variables('end')
+    send_variables('end', test_name)
     producer.flush()
     print("terminating")
