@@ -17,7 +17,7 @@ diset tpch maria_tpch_pass $::env(MARIADB_PASSWORD)
 diset tpch maria_tpch_dbase $::env(MARIADB_DATABASE)
 diset tpch maria_tpch_storage_engine innodb
 puts "SCHEMA BUILD STARTED"
-buildschema
+#buildschema
 puts "SCHEMA BUILD COMPLETED"
 
 # 
@@ -42,5 +42,5 @@ close $of
 # DROP
 
 puts " DROP SCHEMA STARTED"
-deleteschema
+#deleteschema
 puts "DROP SCHEMA COMPLETED"

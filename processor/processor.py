@@ -137,6 +137,7 @@ def process_events(consumer, recording, base, target):
                     scary_test_event(recording, v)
 
                 elif msg.topic() == 'scary_queries':
+                    print('q: ' + v['info'])
                     if v['db']:
                         b.execute('use ' + v['db'])
                     try:
