@@ -148,7 +148,7 @@ def process_events(consumer, recording, base, target):
                     r.execute('set @test_id = (select id from test where testname = ?)', (v['testname'],))
                     recording.begin()
                     rbq.execute("INSERT INTO queries (test_id, db, info, server, qtime, `explain`) VALUES (@test_id, ?, ?, ?, ?, ?)", (v['db'], v['info'], 'base', json.loads(baseQP)['query_block']['r_total_time_ms'], baseQP))
-                    id = r.lastrowid;
+                    id = rbq.lastrowid;
                     if v['db']:
                         t.execute('use ' + v['db'])
                     try:
