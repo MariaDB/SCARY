@@ -139,7 +139,11 @@ def process_events(consumer, recording, base, target):
                 elif msg.topic() == 'scary_queries':
                     if v['db']:
                         b.execute('use ' + v['db'])
-                    b.execute('analyze format=json ' + v['info'])
+                    try:
+                        b.execute('analyze format=json ' + v['info'])
+                    except mariadb.ProgrammingError as e:
+                        print("skip b: " + str(e))
+                        continue
                     baseQP = b.fetchone()[0]
                     r.execute('set @test_id = (select id from test where testname = ?)', (v['testname'],))
                     recording.begin()
@@ -147,7 +151,12 @@ def process_events(consumer, recording, base, target):
                     id = r.lastrowid;
                     if v['db']:
                         t.execute('use ' + v['db'])
-                    t.execute('analyze format=json ' + v['info'])
+                    try:
+                        t.execute('analyze format=json ' + v['info'])
+                    except mariadb.ProgrammingError as e:
+                        print("skip t: " + str(e))
+                        recording.rollback()
+                        continue
                     targetQP = t.fetchone()[0]
                     rtq.execute("INSERT INTO queries (test_id, db, info, server, qtime, `explain`, other) VALUES (@test_id, ?, ?, ?, ?, ?, ?)", (v['db'], v['info'], 'target', json.loads(targetQP)['query_block']['r_total_time_ms'], targetQP, id))
                     recording.commit()
