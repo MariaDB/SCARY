@@ -82,11 +82,6 @@ if __name__ == '__main__':
     print("beginning collection")
     while not killer.kill_now:
         cursor.execute(PROCESS_LIST_QUERY)
-        if sentlist:
-            s = iter(sentlist)
-            c = next(s)
-        else:
-            c = None
         nextlist = []
         q = dict()
         q['testname'] =  test_name
@@ -95,21 +90,16 @@ if __name__ == '__main__':
         for (query_id, db, info) in cursor:
             if info == PROCESS_LIST_QUERY:
                 continue
-            # we filter out the query_ids that we have done
-            while c is not None and query_id < c:
-                try:
-                    c = next(s)
-                except StopIteration:
-                    c = None
-            if c == None or query_id != c:
+            if query_id not in sentlist:
                 q['db'] = db
                 q['info'] = info
+                print('send ' + str(query_id) + " db: " + db + " q: " + info[:30])
                 producer.produce(query_stream, msgpack.packb(q))
                 sent = sent + 1
             else:
                 skipped = skipped + 1
             nextlist.append(query_id)
-        sendlist = nextlist
+        sentlist = nextlist.copy()
         print('number sent ' + str(sent) + " skipped " + str(skipped))
         if sent == 0:
             # just a little backoff
