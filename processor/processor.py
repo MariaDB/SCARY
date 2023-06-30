@@ -91,16 +91,28 @@ def scary_test_event(rc, v):
     with rc.cursor(binary=True) as r:
         rc.begin()
         if v['startstop'] == 'start':
-            r.execute('insert into test (testname, start) values (?, ?)', (v['testname'], v['time']))
-            r.execute('set @test_id = LAST_INSERT_ID()')
-            r.executemany('insert into globalvars (test_id, server, varname, startvalue) values (@test_id, "base", ?, ?)', v['vars'])
-            r.executemany('insert into globalstatus (test_id, server, varname, startvalue) values (@test_id, "base", ?, ?)', v['status'])
+            r.execute('insert ignore into test (testname, start) values (?, ?)', (v['testname'], v['time']))
+            r.execute('set @test_id = (select id from test where testname = ?)', (v['testname'],))
+            r.executemany('replace into globalvars (test_id, server, varname, startvalue) values (@test_id, "base", ?, ?)', v['vars'])
+            r.executemany('replace into globalstatus (test_id, server, varname, startvalue) values (@test_id, "base", ?, ?)', v['status'])
         elif v['startstop'] == 'stop':
             r.execute('update test set stop = ? where testname = ?', (v['time'], v['testname']))
             #r.execute('set @test_id = (select id from test where testname = ?)', (v['testname'],))
             # TODO stop vars/status
         # TODO Base vars/status
         rc.commit()
+
+def create_topic(topic):
+    from confluent_kafka.admin import AdminClient, NewTopic
+    admin = AdminClient(kafka_params)
+    fs = admin.create_topics([NewTopic(topic, 1)])
+    # Wait for each operation to finish. https://github.com/confluentinc/confluent-kafka-python#basic-adminclient-example
+    for topic, f in fs.items():
+        try:
+            f.result()  # The result itself is None
+            print("Topic {} created".format(topic))
+        except Exception as e:
+            print("Failed to create topic {}: {}".format(topic, e))
 
 def process_events(consumer, recording, base, target):
     with recording.cursor(binary=True) as r, recording.cursor(prepared=True, binary=True) as rbq, recording.cursor(prepared=True,binary=True) as rtq, base.cursor() as b, target.cursor() as t:
@@ -114,6 +126,9 @@ def process_events(consumer, recording, base, target):
                 if msg.error().code() == KafkaError._PARTITION_EOF:
                     # End of partition event
                     sys.stderr.write('%% %s [%d] reached end at offset %d\n' % (msg.topic(), msg.partition(), msg.offset()))
+                elif msg.error().code() == KafkaError.UNKNOWN_TOPIC_OR_PART:
+                    create_topic('scary_queries')
+                    continue
                 else:
                     raise KafkaException(msg.error())
             else:
@@ -149,16 +164,6 @@ def waitforstart():
         if msg.error():
             if msg.error().code() == KafkaError.UNKNOWN_TOPIC_OR_PART:
                 create_topic('scary_test')
-                from confluent_kafka.admin import AdminClient, NewTopic
-                admin = AdminClient(**kafka_params)
-                fs = admin.create_topics([NewTopic('scary_test', 1), NewTopic('scary_queries', WORKERS)])
-                # Wait for each operation to finish. https://github.com/confluentinc/confluent-kafka-python#basic-adminclient-example
-                for topic, f in fs.items():
-                    try:
-                        f.result()  # The result itself is None
-                        print("Topic {} created".format(topic))
-                    except Exception as e:
-                        print("Failed to create topic {}: {}".format(topic, e))
                 continue
             else:
                 raise KafkaException(msg.error())
