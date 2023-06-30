@@ -7,9 +7,10 @@ import signal
 from confluent_kafka import Producer
 
 # connection parameters
+# PROCESS GRANT REQUIRED.
 conn_params= {
-    "user" : os.environ["MARIADB_USER"],
-    "password" : os.environ["MARIADB_USER"],
+    "user" : "root",
+    "password" : "",
     "host" : os.environ["MARIADB_HOST"],
     "database" : os.environ["MARIADB_DATABASE"],
 }
@@ -36,15 +37,19 @@ def encode_datetime(obj):
     return obj
 
 def send_variables(start_end):
+    test['startstop'] = start_end
     test['time'] = datetime.datetime.now()
     cursor.execute('SHOW GLOBAL VARIABLES')
     test['vars'] = cursor.fetchall()
     cursor.execute('SHOW GLOBAL STATUS')
     test['status'] = cursor.fetchall()
-    producer.produce('scary_test', msgpack.packb(test, default=encode_datetime), start_end)
+    producer.produce('scary_test', msgpack.packb(test, default=encode_datetime))
+
+PROCESS_LIST_QUERY = "SELECT QUERY_ID, DB, INFO FROM INFORMATION_SCHEMA.PROCESSLIST WHERE COMMAND='Query'"
 
 if __name__ == '__main__':
 
+    print("initializing")
     # Establish a connection
     connection = mariadb.connect(**conn_params)
 
@@ -71,29 +76,46 @@ if __name__ == '__main__':
     # We maintain a list of query_ids that we have sent
     # this list is maintained in order and we assume the I_S.PROCESSLIST returns query_id in order
     sentlist = []
+
+    print("beginning collection")
     while not killer.kill_now:
-        cursor.execute("SELECT QUERY_ID, DB, INFO FROM INFORMATION_SCHEMA.PROCESSLIST WHERE COMMAND='Query'")
-        s = iter(sentlist)
+        cursor.execute(PROCESS_LIST_QUERY)
+        if sentlist:
+            s = iter(sentlist)
+            c = next(s)
+        else:
+            c = None
         nextlist = []
-        c = next(s)
         q = dict()
+        q['testname'] =  test_name
         sent = 0
+        skipped = 0
         for (query_id, db, info) in cursor:
+            if info == PROCESS_LIST_QUERY:
+                continue
             # we filter out the query_ids that we have done
             while c is not None and query_id < c:
-                c = next(s)
+                try:
+                    c = next(s)
+                except StopIteration:
+                    c = None
             if c == None or query_id != c:
                 q['db'] = db
                 q['info'] = info
-                producer.produce(query_stream, msgpack.packb(q), test_name)
-                producer.flush()
+                producer.produce(query_stream, msgpack.packb(q))
                 sent = sent + 1
+            else:
+                skipped = skipped + 1
             nextlist.append(query_id)
         sendlist = nextlist
+        print('number sent ' + str(sent) + " skipped " + str(skipped))
         if sent == 0:
             # just a little backoff
             time.sleep(3)
 
     # Shutdown
+    print("shutting down")
+    producer.flush()
     send_variables('end')
     producer.flush()
+    print("terminating")
