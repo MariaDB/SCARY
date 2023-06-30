@@ -137,14 +137,16 @@ def process_events(consumer, recording, base, target):
                     scary_test_event(recording, v)
 
                 elif msg.topic() == 'scary_queries':
-                    b.execute('use ' + v['db'])
+                    if v['db']:
+                        b.execute('use ' + v['db'])
                     b.execute('analyze format=json ' + v['info'])
                     baseQP = b.fetchone()[0]
                     r.execute('set @test_id = (select id from test where testname = ?)', (v['testname'],))
                     recording.begin()
                     rbq.execute("INSERT INTO queries (test_id, db, info, server, qtime, `explain`) VALUES (@test_id, ?, ?, ?, ?, ?)", (v['db'], v['info'], 'base', json.loads(baseQP)['query_block']['r_total_time_ms'], baseQP))
                     id = r.lastrowid;
-                    t.execute('use ' + v['db'])
+                    if v['db']:
+                        t.execute('use ' + v['db'])
                     t.execute('analyze format=json ' + v['info'])
                     targetQP = t.fetchone()[0]
                     rtq.execute("INSERT INTO queries (test_id, db, info, server, qtime, `explain`, other) VALUES (@test_id, ?, ?, ?, ?, ?, ?)", (v['db'], v['info'], 'target', json.loads(targetQP)['query_block']['r_total_time_ms'], targetQP, id))
