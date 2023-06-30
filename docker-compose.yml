@@ -89,6 +89,11 @@ services:
     environment:
       - ALLOW_PLAINTEXT_LISTENER=yes
       - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+    healthcheck:
+      test: ["CMD", "kafka-features.sh", "--bootstrap-server", "127.0.0.1:9092", "describe"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
     volumes:
       - 'kafka_storage:/bitnami/kafka'
   workload:
