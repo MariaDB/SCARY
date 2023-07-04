@@ -9,6 +9,7 @@ services:
       MARIADB_PASSWORD: test
       MARIADB_DATABASE: test
       KAFKA: kafka
+      PROCESSOR : processor
     depends_on:
       mariadb_base:
         condition: service_healthy

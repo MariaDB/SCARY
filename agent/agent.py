@@ -36,6 +36,28 @@ def encode_datetime(obj):
         return {'__datetime__': True, 'as_str': obj.strftime("%Y%m%dT%H:%M:%S.%f")}
     return obj
 
+# https://stackoverflow.com/questions/2805231/how-can-i-do-dns-lookups-in-python-including-referring-to-etc-hosts/66000439#66000439
+import socket
+
+def get_ip_by_hostname(hostname):
+    # see `man getent` `/ hosts `
+    # see `man getaddrinfo`
+
+    return list(
+        i        # raw socket structure
+            [4]  # internet protocol info
+            [0]  # address
+        for i in
+        socket.getaddrinfo(
+            hostname,
+            0  # port, required
+        )
+        if i[0] in ( socket.AddressFamily.AF_INET, socket.AddressFamily.AF_INET6)
+
+        # ignore duplicate addresses with other socket types
+        and i[1] is socket.SocketKind.SOCK_RAW
+    )
+
 def send_variables(start_end, test_name):
     test = dict()
     test['testname'] = test_name
@@ -47,7 +69,14 @@ def send_variables(start_end, test_name):
     test['status'] = cursor.fetchall()
     producer.produce('scary_test', msgpack.packb(test, default=encode_datetime))
 
-PROCESS_LIST_QUERY = "SELECT QUERY_ID, DB, INFO FROM INFORMATION_SCHEMA.PROCESSLIST WHERE COMMAND='Query'"
+PROCESS_LIST_QUERY = """
+    SELECT QUERY_ID, DB, INFO
+    FROM INFORMATION_SCHEMA.PROCESSLIST
+    WHERE COMMAND='Query'
+        AND ID != CONNECTION_ID()
+        AND STATE = 'Sending data'
+"""
+# TODO 'Sending data' isn't always a SELECT query - e.g. INSERT .. RETURNING
 
 if __name__ == '__main__':
 
@@ -69,6 +98,14 @@ if __name__ == '__main__':
 
     test_name = test['name']
 
+    if os.environ.get('PROCESSOR'):
+        # Exclude the processor from the agent's collection
+        p = os.environ.get('PROCESSOR')
+        p_ip = get_ip_by_hostname(p)
+        if len(p_ip) > 0:
+            print('ignoring PROCESSOR ip ' + p_ip[0])
+            PROCESS_LIST_QUERY = PROCESS_LIST_QUERY + " AND NOT HOST LIKE '{}:%'".format(p_ip[0])
+
     send_variables('start', test_name)
 
     query_stream = 'scary_queries'
@@ -88,8 +125,6 @@ if __name__ == '__main__':
         sent = 0
         skipped = 0
         for (query_id, db, info) in cursor:
-            if info == PROCESS_LIST_QUERY:
-                continue
             if query_id not in sentlist:
                 q['db'] = db
                 q['info'] = info
