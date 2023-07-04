@@ -58,16 +58,12 @@ def get_ip_by_hostname(hostname):
         and i[1] is socket.SocketKind.SOCK_RAW
     )
 
-def send_variables(start_end, test_name):
+def start_end_event(test_name, start_end):
     test = dict()
     test['testname'] = test_name
     test['startstop'] = start_end
-    test['time'] = datetime.datetime.now()
-    cursor.execute('SHOW GLOBAL VARIABLES')
-    test['vars'] = cursor.fetchall()
-    cursor.execute('SHOW GLOBAL STATUS')
-    test['status'] = cursor.fetchall()
-    producer.produce('scary_test', msgpack.packb(test, default=encode_datetime))
+    producer.produce('scary_test', msgpack.packb(test))
+
 
 PROCESS_LIST_QUERY = """
     SELECT QUERY_ID, DB, INFO
@@ -88,15 +84,13 @@ if __name__ == '__main__':
 
     producer = Producer(**kafka_params)
 
-    test = dict()
-
-    test['name'] = os.environ.get('TEST')
-    if test['name'] is None:
+    test_name = os.environ.get('TEST')
+    if test_name is None:
         cursor.execute('SELECT CONCAT(@@hostname, DATE_FORMAT(now(), "_%Y%m%d_%H:%i:%s"))')
-        (test['name'],) = cursor.fetchone()
+        (test_name,) = cursor.fetchone()
         cursor.nextset()
 
-    test_name = test['name']
+    start_end_event(test_name, 'start')
 
     if os.environ.get('PROCESSOR'):
         # Exclude the processor from the agent's collection
@@ -105,8 +99,6 @@ if __name__ == '__main__':
         if len(p_ip) > 0:
             print('ignoring PROCESSOR ip ' + p_ip[0])
             PROCESS_LIST_QUERY = PROCESS_LIST_QUERY + " AND NOT HOST LIKE '{}:%'".format(p_ip[0])
-
-    send_variables('start', test_name)
 
     query_stream = 'scary_queries'
 
@@ -125,7 +117,7 @@ if __name__ == '__main__':
         sent = 0
         skipped = 0
         for (query_id, db, info) in cursor:
-            if query_id not in sentlist:
+            if query_id not in sentlist and info is not None:
                 q['db'] = db
                 q['info'] = info
                 print('send ' + str(query_id) + " db: " + db + " q: " + info[:30])
@@ -143,6 +135,6 @@ if __name__ == '__main__':
     # Shutdown
     print("shutting down")
     producer.flush()
-    send_variables('end', test_name)
+    start_end_event(test_name, 'stop')
     producer.flush()
     print("terminating")

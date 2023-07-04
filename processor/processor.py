@@ -81,6 +81,12 @@ def decode_datetime(obj):
         obj = datetime.datetime.strptime(obj["as_str"], "%Y%m%dT%H:%M:%S.%f")
     return obj
 
+def send_variables(start_end, test_name):
+    cursor.execute('SHOW GLOBAL VARIABLES')
+    test['vars'] = cursor.fetchall()
+    cursor.execute('SHOW GLOBAL STATUS')
+    test['status'] = cursor.fetchall()
+
 # Init recording tables if not there
 def init():
     with mariadb.connect(**record_params) as recording, recording.cursor() as r:
@@ -88,18 +94,31 @@ def init():
             r.execute(i)
 
 def scary_test_event(rc, v):
-    with rc.cursor(binary=True) as r:
+    with rc.cursor(binary=True) as r, mariadb.connect(**target_params) as target, mariadb.connect(**base_params) as base, base.cursor() as b, target.cursor() as t:
+        b.execute('SHOW GLOBAL VARIABLES')
+        bv = b.fetchall()
+        b.execute('SHOW GLOBAL STATUS')
+        bs = b.fetchall()
+        t.execute('SHOW GLOBAL VARIABLES')
+        tv = b.fetchall()
+        t.execute('SHOW GLOBAL STATUS')
+        ts = b.fetchall()
         rc.begin()
         if v['startstop'] == 'start':
-            r.execute('insert ignore into test (testname, start) values (?, ?)', (v['testname'], v['time']))
+            r.execute('insert ignore into test (testname, start) values (?, NOW())', (v['testname'],))
             r.execute('set @test_id = (select id from test where testname = ?)', (v['testname'],))
-            r.executemany('replace into globalvars (test_id, server, varname, startvalue) values (@test_id, "base", ?, ?)', v['vars'])
-            r.executemany('replace into globalstatus (test_id, server, varname, startvalue) values (@test_id, "base", ?, ?)', v['status'])
+            r.executemany('replace into globalvars (test_id, server, varname, startvalue) values (@test_id, "base", ?, ?)', bv)
+            r.executemany('replace into globalvars (test_id, server, varname, startvalue) values (@test_id, "target", ?, ?)', tv)
+            r.executemany('replace into globalstatus (test_id, server, varname, startvalue) values (@test_id, "base", ?, ?)', bs)
+            r.executemany('replace into globalstatus (test_id, server, varname, startvalue) values (@test_id, "target", ?, ?)', ts)
         elif v['startstop'] == 'stop':
-            r.execute('update test set stop = ? where testname = ?', (v['time'], v['testname']))
-            #r.execute('set @test_id = (select id from test where testname = ?)', (v['testname'],))
-            # TODO stop vars/status
-        # TODO Base vars/status
+            r.execute('update test set stop = NOW() where testname = ?', (v['testname'],))
+            r.execute('set @test_id = (select id from test where testname = ?)', (v['testname'],))
+            # swap bv (and others) tuple order (value, name) TODO
+            r.executemany('update globalvars set stopvalue = ? where test_id = @test_id and server = "base" and varname = ?', bv)
+            r.executemany('update globalvars set stopvalue = ? where test_id = @test_id and server = "target" and varname = ?', tv)
+            r.executemany('update globalstatus set stopvalue = ? where test_id = @test_id and server = "base" and varname = ?', bs)
+            r.executemany('update globalstatus set stopvalue = ? where test_id = @test_id and server = "target" and varname = ?', ts)
         rc.commit()
 
 def create_topic(topic):
@@ -148,7 +167,10 @@ def process_events(consumer, recording, base, target):
                         print("skip b: " + str(e))
                         continue
                     baseQP = b.fetchone()[0]
-                    r.execute('set @test_id = (select id from test where testname = ?)', (v['testname'],))
+                    r.execute('select id into @test_id from test where testname = ?)', (v['testname'],))
+                    if r.rowcount == 0:
+                        r.execute('insert ignore into test (testname, start) values (?, NOW())', (v['testname'],))
+                        r.execute('set @test_id = (select id from test where testname = ?)', (v['testname'],))
                     recording.begin()
                     rbq.execute("INSERT INTO queries (test_id, db, info, server, qtime, `explain`) VALUES (@test_id, ?, ?, ?, ?, ?)", (v['db'], v['info'], 'base', json.loads(baseQP)['query_block']['r_total_time_ms'], baseQP))
                     id = rbq.lastrowid;
@@ -182,7 +204,7 @@ def waitforstart():
             else:
                 raise KafkaException(msg.error())
 
-        v = msgpack.unpackb(msg.value(), object_hook=decode_datetime)
+        v = msgpack.unpackb(msg.value())
         if msg.topic() == 'scary_test' and v['startstop'] == 'start':
             with mariadb.connect(**record_params) as r:
                 scary_test_event(r, v)
