@@ -7,6 +7,8 @@ import datetime
 
 from confluent_kafka import Consumer, KafkaError, KafkaException
 
+from multiprocessing import Pool
+
 # connection parameter
 record_params= {
     "user" : os.environ["RECORD_USER"],
@@ -133,9 +135,39 @@ def create_topic(topic):
         except Exception as e:
             print("Failed to create topic {}: {}".format(topic, e))
 
-def process_events(consumer, recording, base, target):
-    with recording.cursor(binary=True) as r, recording.cursor(prepared=True, binary=True) as rbq, recording.cursor(prepared=True,binary=True) as rtq, base.cursor() as b, target.cursor() as t:
-        consumer.subscribe(['scary_test', 'scary_queries'])
+def process_query_event(v):
+    with mariadb.connect(**record_params) as recording, mariadb.connect(**target_params) as target, mariadb.connect(**base_params) as base, recording.cursor(binary=True) as r, recording.cursor(prepared=True, binary=True) as rbq, recording.cursor(prepared=True,binary=True) as rtq, base.cursor() as b, target.cursor() as t:
+        print('q: ' + v['info'])
+        if v['db']:
+            b.execute('use ' + v['db'])
+        try:
+            b.execute('analyze format=json ' + v['info'])
+        except mariadb.ProgrammingError as e:
+            print("skip b: " + str(e))
+            return
+        baseQP = b.fetchone()[0]
+        r.execute('select id into @test_id from test where testname = ?)', (v['testname'],))
+        if r.rowcount == 0:
+            r.execute('insert ignore into test (testname, start) values (?, NOW())', (v['testname'],))
+            r.execute('set @test_id = (select id from test where testname = ?)', (v['testname'],))
+        recording.begin()
+        rbq.execute("INSERT INTO queries (test_id, db, info, server, qtime, `explain`) VALUES (@test_id, ?, ?, ?, ?, ?)", (v['db'], v['info'], 'base', json.loads(baseQP)['query_block']['r_total_time_ms'], baseQP))
+        id = rbq.lastrowid;
+        if v['db']:
+            t.execute('use ' + v['db'])
+        try:
+            t.execute('analyze format=json ' + v['info'])
+        except mariadb.ProgrammingError as e:
+            print("skip t: " + str(e))
+            recording.rollback()
+            return
+        targetQP = t.fetchone()[0]
+        rtq.execute("INSERT INTO queries (test_id, db, info, server, qtime, `explain`, other) VALUES (@test_id, ?, ?, ?, ?, ?, ?)", (v['db'], v['info'], 'target', json.loads(targetQP)['query_block']['r_total_time_ms'], targetQP, id))
+        recording.commit()
+
+def process_events(consumer):
+    consumer.subscribe(['scary_test', 'scary_queries'])
+    with Pool() as pool:
         while True:
             msg = consumer.poll()
             if msg is None:
@@ -154,42 +186,14 @@ def process_events(consumer, recording, base, target):
                     raise KafkaException(msg.error())
             else:
                 v = msgpack.unpackb(msg.value(), object_hook=decode_datetime)
+
                 if msg.topic() == 'scary_test':
                     scary_test_event(recording, v)
 
                 elif msg.topic() == 'scary_queries':
-                    print('q: ' + v['info'])
-                    if v['db']:
-                        b.execute('use ' + v['db'])
-                    try:
-                        b.execute('analyze format=json ' + v['info'])
-                    except mariadb.ProgrammingError as e:
-                        print("skip b: " + str(e))
-                        continue
-                    baseQP = b.fetchone()[0]
-                    r.execute('select id into @test_id from test where testname = ?)', (v['testname'],))
-                    if r.rowcount == 0:
-                        r.execute('insert ignore into test (testname, start) values (?, NOW())', (v['testname'],))
-                        r.execute('set @test_id = (select id from test where testname = ?)', (v['testname'],))
-                    recording.begin()
-                    rbq.execute("INSERT INTO queries (test_id, db, info, server, qtime, `explain`) VALUES (@test_id, ?, ?, ?, ?, ?)", (v['db'], v['info'], 'base', json.loads(baseQP)['query_block']['r_total_time_ms'], baseQP))
-                    id = rbq.lastrowid;
-                    if v['db']:
-                        t.execute('use ' + v['db'])
-                    try:
-                        t.execute('analyze format=json ' + v['info'])
-                    except mariadb.ProgrammingError as e:
-                        print("skip t: " + str(e))
-                        recording.rollback()
-                        continue
-                    targetQP = t.fetchone()[0]
-                    rtq.execute("INSERT INTO queries (test_id, db, info, server, qtime, `explain`, other) VALUES (@test_id, ?, ?, ?, ?, ?, ?)", (v['db'], v['info'], 'target', json.loads(targetQP)['query_block']['r_total_time_ms'], targetQP, id))
-                    recording.commit()
+                    pool.apply_async(process_query_event, (v, ))
                 else:
                     print("unknown msg topic " + msg.topic())
-
-
-
 
 def waitforstart():
     print('waiting for start')
@@ -217,22 +221,15 @@ def work():
     print('worker begin')
     consumer = Consumer(**kafka_params)
     try:
-        with mariadb.connect(**record_params) as recording, mariadb.connect(**target_params) as target, mariadb.connect(**base_params) as base:
-            print("connections made, begin processing")
-            process_events(consumer, recording, base, target)
+        print("connections made, begin processing")
+        process_events(consumer)
 
     finally:
         consumer.close()
-
-
-#from multiprocessing import Process
 
 if __name__ == '__main__':
     init()
     waitforstart()
     work()
-#    p = Process(target=work)
-#    p.start()
-#    p.join()
 
 
