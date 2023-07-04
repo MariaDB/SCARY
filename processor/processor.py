@@ -123,6 +123,8 @@ def process_events(consumer, recording, base, target):
                 print("poll timeout - continuing")
                 continue
             if msg.error():
+                if msg.error().code() == KafkaError._MAX_POLL_EXCEEDED:
+                    continue
                 if msg.error().code() == KafkaError._PARTITION_EOF:
                     # End of partition event
                     sys.stderr.write('%% %s [%d] reached end at offset %d\n' % (msg.topic(), msg.partition(), msg.offset()))
